@@ -17,19 +17,8 @@
  */
 package com.github.gabehamilton.jmeter;
 
-import java.lang.annotation.Annotation;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.Enumeration;
-
 import junit.framework.AssertionFailedError;
 import junit.framework.Protectable;
-import junit.framework.TestCase;
-import junit.framework.TestFailure;
-import junit.framework.TestResult;
-
 import org.apache.jmeter.samplers.AbstractSampler;
 import org.apache.jmeter.samplers.Entry;
 import org.apache.jmeter.samplers.SampleResult;
@@ -37,10 +26,18 @@ import org.apache.jmeter.testbeans.TestBean;
 import org.apache.jmeter.testelement.ThreadListener;
 import org.apache.jorphan.logging.LoggingManager;
 import org.apache.log.Logger;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.Test.None;
+import org.junit.runner.Result;
+import org.junit.runner.notification.Failure;
+import org.junit.runners.model.InitializationError;
+import org.spockframework.runtime.model.FeatureMetadata;
+import spock.lang.Specification;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.Iterator;
 
 /**
  *
@@ -48,6 +45,12 @@ import org.junit.Test.None;
  * a Spock spec. The current implementation will use the string
  * constructor first. If the test class does not declare a string
  * constructor, the sampler will try empty constructor.
+ *
+ * todo Invoking single methods is not implemented
+ *
+ * Derived from Jmeter 2.12 JUnit support:
+ * @see org.apache.jmeter.protocol.java.sampler.JunitSampler
+ * @link http://svn.apache.org/repos/asf/jmeter/trunk/src/junit/org/apache/jmeter/protocol/java/sampler/JUnitSampler.java
  */
 public class SpockSampler extends AbstractSampler implements ThreadListener, TestBean {
 
@@ -55,27 +58,27 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
 
     private static final long serialVersionUID = 1L; // Remember to change this when the class changes
 
-    //++ JMX file attributes - do not change
-    private static final String CLASSNAME = "spock.classname";
-    private static final String CONSTRUCTORSTRING = "spock.constructorstring";
-    private static final String METHOD = "spock.method";
-    private static final String ERROR = "spock.error";
-    private static final String ERRORCODE = "spock.error.code";
-    private static final String FAILURE = "spock.failure";
-    private static final String FAILURECODE = "spock.failure.code";
-    private static final String SUCCESS = "spock.success";
-    private static final String SUCCESSCODE = "spock.success.code";
-    private static final String FILTER = "spock.pkg.filter";
-    private static final String DOSETUP = "spock.exec.setup";
-    private static final String APPEND_ERROR = "spock.append.error";
-    private static final String APPEND_EXCEPTION = "spock.append.exception";
-    private static final String JUNIT4 = "spock.spock4";
-    private static final String CREATE_INSTANCE_PER_SAMPLE="spock.createinstancepersample";
+    // BeanInfo properties
+    private static final String CLASSNAME = "spockSampler.classname";
+    private static final String CONSTRUCTORSTRING = "spockSampler.constructorstring";
+    private static final String METHOD = "spockSampler.method";
+    private static final String ERROR = "spockSampler.error";
+    private static final String ERRORCODE = "spockSampler.error.code";
+    private static final String FAILURE = "spockSampler.failure";
+    private static final String FAILURECODE = "spockSampler.failure.code";
+    private static final String SUCCESS = "spockSampler.success";
+    private static final String SUCCESSCODE = "spockSampler.success.code";
+    private static final String FILTER = "spockSampler.pkg.filter";
+    private static final String DOSETUP = "spockSampler.exec.setup";
+    private static final String APPEND_ERROR = "spockSampler.append.error";
+    private static final String APPEND_EXCEPTION = "spockSampler.append.exception";
+    private static final String CREATE_INSTANCE_PER_SAMPLE="spockSampler.createinstancepersample";
     private static final boolean CREATE_INSTANCE_PER_SAMPLE_DEFAULT = false;
-    //-- JMX file attributes - do not change
+    //--
 
-    private static final String SETUP = "setUp";
-    private static final String TEARDOWN = "tearDown";
+    // Method names to look for in spec
+    private static final String SETUP = "setup";
+    private static final String TEARDOWN = "cleanup";
 
     // the Method objects for setUp (@Before) and tearDown (@After) methods
     // Will be null if not provided or not required
@@ -83,7 +86,7 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
     private transient Method tearDownMethod;
 
     // The TestCase to run
-    private transient TestCase testCase;
+    private transient Specification testCase;
     // The test object, i.e. the instance of the class containing the test method
     // This is the same as testCase for JUnit3 tests
     // but different for JUnit4 tests which use a wrapper
@@ -100,6 +103,128 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
         super();
     }
 
+    /** {@inheritDoc} */
+    @Override
+    public SampleResult sample(Entry entry) {
+        if(getCreateOneInstancePerSample()) {
+            initializeTestObject();
+        }
+        SampleResult sresult = new SampleResult();
+        sresult.setSampleLabel(getName());// Bug 41522 - don't use rlabel here
+        sresult.setSamplerData(className + "." + methodName);
+        sresult.setDataType(SampleResult.TEXT);
+        // Assume success
+        sresult.setSuccessful(true);
+        sresult.setResponseMessage(getSuccess());
+        sresult.setResponseCode(getSuccessCode());
+
+        if (this.testCase != null){
+            // create a new TestResult
+
+            Result result = null;
+            final Specification spec = this.testCase;
+            try {
+                if (setUpMethod != null){
+                    setUpMethod.invoke(this.testObject,new Object[0]);
+                }
+                sresult.sampleStart();
+
+                result = SpockSpecRunner.execute(spec.getClass());
+
+                // todo Extend Spock BaseSpecRunner to allow running just one method and individually
+				//  note SpockSpecificationFilter in SpockSpecRunner
+                // calling setUp and tearDown. Doing that will result in calling
+                // the setUp and tearDown method twice and the elapsed time
+                // will include setup and teardown.
+                sresult.sampleEnd();
+                if (tearDownMethod != null){
+                    tearDownMethod.invoke(testObject,new Object[0]);
+                }
+//                sresult.setSampleCount(result.getRunCount());
+            }
+
+            catch(InitializationError ie) {
+                throw new RuntimeException(ie);
+            }
+
+            catch (InvocationTargetException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof AssertionFailedError){
+//                  tr.addFailure(spec, (AssertionFailedError) cause); //  todo with Result
+                } else if (cause instanceof AssertionError) {
+                    // Convert JUnit4 failure to Junit3 style
+                    AssertionFailedError afe = new AssertionFailedError(cause.toString());
+                    // copy the original stack trace
+                    afe.setStackTrace(cause.getStackTrace());
+//                  tr.addFailure(spec, afe);   //  todo with Result
+                } else if (cause != null) {
+//                  tr.addError(spec, cause);  //  todo with Result
+                } else {
+//                  tr.addError(spec, e); // todo with Result
+                }
+            } catch (IllegalAccessException e) {
+//              tr.addError(spec, e);   // todo with Result
+            } catch (IllegalArgumentException e) {
+//              tr.addError(spec, e);  // todo with Result
+            }
+            if (result == null || !result.wasSuccessful() ){
+                sresult.setSuccessful(false);
+                StringBuilder buf = new StringBuilder();
+                StringBuilder buftrace = new StringBuilder();
+                Iterator<Failure> it;
+                if (getAppendError()) {
+                    it = result.getFailures().iterator();
+                    if (it.hasNext()){
+                        sresult.setResponseCode(getFailureCode());
+                        buf.append( getFailure() );
+                        buf.append("\n");
+                    }
+                    while (it.hasNext()){
+                        Failure item = it.next();
+                        buf.append( "Failure -- ");
+                        buf.append( item.toString() );
+                        buf.append("\n");
+                        buftrace.append( "Failure -- ");
+                        buftrace.append( item.toString() );
+                        buftrace.append("\n");
+                        buftrace.append( "Trace -- ");
+                        buftrace.append( item.getTrace() );
+                    }
+// todo track errors
+//                    it = result.getErrors();
+//                    if (it.hasNext()){
+//                        sresult.setResponseCode(getErrorCode());
+//                        buf.append( getError() );
+//                        buf.append("\n");
+//                    }
+                    while (it.hasNext()){
+                        Failure item = it.next();
+                        buf.append( "Error -- ");
+                        buf.append( item.toString() );
+                        buf.append("\n");
+                        buftrace.append( "Error -- ");
+                        buftrace.append( item.toString() );
+                        buftrace.append("\n");
+                        buftrace.append( "Trace -- ");
+                        buftrace.append( item.getTrace() );
+                    }
+                }
+                sresult.setResponseMessage(buf.toString());
+                sresult.setResponseData(buftrace.toString(), null);
+            }
+        } else {
+            // we should log a warning, but allow the test to keep running
+            sresult.setSuccessful(false);
+            // this should be externalized to the properties
+            sresult.setResponseMessage("Failed to create an instance of the class:"+getClassname()
+                    +", reasons may be missing both empty constructor and one "
+                    + "String constructor or failure to instantiate constructor,"
+                    + " check warning messages in jmeter log file");
+            sresult.setResponseCode(getErrorCode());
+        }
+        return sresult;
+    }
+
     /**
      * Method tries to get the setUp and tearDown method for the class
      * @param testObject
@@ -108,14 +233,9 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
         setUpMethod = null;
         tearDownMethod = null;
         if (!getDoNotSetUpTearDown()) {
-            setUpMethod = getJunit4() ?
-                    getMethodWithAnnotation(testObject, Before.class)
-                    :
-                    getMethod(testObject, SETUP);
-            tearDownMethod = getJunit4() ?
-                    getMethodWithAnnotation(testObject, After.class)
-                    :
-                    getMethod(testObject, TEARDOWN);
+            // todo setup and cleanup are not being found
+            setUpMethod = getMethod(testObject, SETUP);
+            tearDownMethod = getMethod(testObject, TEARDOWN);
         }
     }
 
@@ -178,7 +298,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      * @return the success message
      */
     public String getSuccess(){
-        return getPropertyAsString(SUCCESS);
+        String value = getPropertyAsString(SUCCESS);
+        if("".equals(value))
+            value = "successful";
+        return value;
     }
 
     /**
@@ -193,7 +316,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      * @return the success code defined by the user
      */
     public String getSuccessCode(){
-        return getPropertyAsString(SUCCESSCODE);
+        String value = getPropertyAsString(SUCCESSCODE);
+        if("".equals(value))
+            value = "1000";
+        return value;
     }
 
     /**
@@ -209,7 +335,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      * @return the failure message
      */
     public String getFailure(){
-        return getPropertyAsString(FAILURE);
+        String value = getPropertyAsString(FAILURE);
+        if("".equals(value))
+            value = "failed";
+        return value;
     }
 
     /**
@@ -224,7 +353,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      * @return The failure code that is used by other components
      */
     public String getFailureCode(){
-        return getPropertyAsString(FAILURECODE);
+        String value = getPropertyAsString(FAILURECODE);
+        if("".equals(value))
+            value = "0001";
+        return value;
     }
 
     /**
@@ -239,7 +371,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      * @return the descriptive error for the test
      */
     public String getError(){
-        return getPropertyAsString(ERROR);
+        String value = getPropertyAsString(ERROR);
+        if("".equals(value))
+            value = "An unexpected error occurred";
+        return value;
     }
 
     /**
@@ -258,7 +393,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      * be an unique error code.
      */
     public String getErrorCode(){
-        return getPropertyAsString(ERRORCODE);
+        String value = getPropertyAsString(ERRORCODE);
+        if("".equals(value))
+            value = "9999";
+        return value;
     }
 
     /**
@@ -347,136 +485,6 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
     }
 
     /**
-     * Check if JUnit4 (annotations) are to be used instead of
-     * the JUnit3 style (TestClass and specific method names)
-     *
-     * @return true if JUnit4 (annotations) are to be used.
-     * Default is false.
-     */
-    public boolean getJunit4() {
-        return getPropertyAsBoolean(JUNIT4, false);
-    }
-
-    /**
-     * Set whether to use JUnit4 style or not.
-     * @param junit4 true if JUnit4 style is to be used.
-     */
-    public void setJunit4(boolean junit4) {
-        setProperty(JUNIT4, junit4, false);
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public SampleResult sample(Entry entry) {
-        if(getCreateOneInstancePerSample()) {
-            initializeTestObject();
-        }
-        SampleResult sresult = new SampleResult();
-        sresult.setSampleLabel(getName());// Bug 41522 - don't use rlabel here
-        sresult.setSamplerData(className + "." + methodName);
-        sresult.setDataType(SampleResult.TEXT);
-        // Assume success
-        sresult.setSuccessful(true);
-        sresult.setResponseMessage(getSuccess());
-        sresult.setResponseCode(getSuccessCode());
-        if (this.testCase != null){
-            // create a new TestResult
-            TestResult tr = new TestResult();
-            final TestCase theClazz = this.testCase;
-            try {
-                if (setUpMethod != null){
-                    setUpMethod.invoke(this.testObject,new Object[0]);
-                }
-                sresult.sampleStart();
-                tr.startTest(this.testCase);
-                // Do not use TestCase.run(TestResult) method, since it will
-                // call setUp and tearDown. Doing that will result in calling
-                // the setUp and tearDown method twice and the elapsed time
-                // will include setup and teardown.
-                tr.runProtected(theClazz, protectable);
-                tr.endTest(this.testCase);
-                sresult.sampleEnd();
-                if (tearDownMethod != null){
-                    tearDownMethod.invoke(testObject,new Object[0]);
-                }
-            } catch (InvocationTargetException e) {
-                Throwable cause = e.getCause();
-                if (cause instanceof AssertionFailedError){
-                    tr.addFailure(theClazz, (AssertionFailedError) cause);
-                } else if (cause instanceof AssertionError) {
-                    // Convert JUnit4 failure to Junit3 style
-                    AssertionFailedError afe = new AssertionFailedError(cause.toString());
-                    // copy the original stack trace
-                    afe.setStackTrace(cause.getStackTrace());
-                    tr.addFailure(theClazz, afe);
-                } else if (cause != null) {
-                    tr.addError(theClazz, cause);
-                } else {
-                    tr.addError(theClazz, e);
-                }
-            } catch (IllegalAccessException e) {
-                tr.addError(theClazz, e);
-            } catch (IllegalArgumentException e) {
-                tr.addError(theClazz, e);
-            }
-            if ( !tr.wasSuccessful() ){
-                sresult.setSuccessful(false);
-                StringBuilder buf = new StringBuilder();
-                StringBuilder buftrace = new StringBuilder();
-                Enumeration<TestFailure> en;
-                if (getAppendError()) {
-                    en = tr.failures();
-                    if (en.hasMoreElements()){
-                        sresult.setResponseCode(getFailureCode());
-                        buf.append( getFailure() );
-                        buf.append("\n");
-                    }
-                    while (en.hasMoreElements()){
-                        TestFailure item = en.nextElement();
-                        buf.append( "Failure -- ");
-                        buf.append( item.toString() );
-                        buf.append("\n");
-                        buftrace.append( "Failure -- ");
-                        buftrace.append( item.toString() );
-                        buftrace.append("\n");
-                        buftrace.append( "Trace -- ");
-                        buftrace.append( item.trace() );
-                    }
-                    en = tr.errors();
-                    if (en.hasMoreElements()){
-                        sresult.setResponseCode(getErrorCode());
-                        buf.append( getError() );
-                        buf.append("\n");
-                    }
-                    while (en.hasMoreElements()){
-                        TestFailure item = en.nextElement();
-                        buf.append( "Error -- ");
-                        buf.append( item.toString() );
-                        buf.append("\n");
-                        buftrace.append( "Error -- ");
-                        buftrace.append( item.toString() );
-                        buftrace.append("\n");
-                        buftrace.append( "Trace -- ");
-                        buftrace.append( item.trace() );
-                    }
-                }
-                sresult.setResponseMessage(buf.toString());
-                sresult.setResponseData(buftrace.toString(), null);
-            }
-        } else {
-            // we should log a warning, but allow the test to keep running
-            sresult.setSuccessful(false);
-            // this should be externalized to the properties
-            sresult.setResponseMessage("Failed to create an instance of the class:"+getClassname()
-                    +", reasons may be missing both empty constructor and one "
-                    + "String constructor or failure to instantiate constructor,"
-                    + " check warning messages in jmeter log file");
-            sresult.setResponseCode(getErrorCode());
-        }
-        return sresult;
-    }
-
-    /**
      * If the method is not able to create a new instance of the
      * class, it returns null and logs all the exceptions at
      * warning level.
@@ -489,12 +497,18 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
             Class<?> theclazz = null;
             Object[] strParams = null;
             Object[] params = null;
+
+            // todo this is a hack until the GUI is working
+            if("".equals(className)) {
+                className = "com.github.gabehamilton.jmeter.SuccessfulSpecToBeRunBySamplerSpec";
+            }
+
             try
             {
                 theclazz =
                         Thread.currentThread().getContextClassLoader().loadClass(className.trim());
             } catch (ClassNotFoundException e) {
-                log.warn("ClassNotFoundException:: " + e.getMessage());
+                log.warn("ClassNotFoundException::" + className.trim() + " :: " + e.getMessage());
             }
             if (theclazz != null) {
                 // first we see if the class declares a string
@@ -515,7 +529,7 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
                         strCon = null;
                     }
                 } catch (NoSuchMethodException e) {
-                    log.info("Trying to find constructor with one String parameter returned error: " + e.getMessage());
+                    log.debug("Trying to find constructor with one String parameter returned error: " + e.getMessage());
                 }
                 try {
                     con = theclazz.getDeclaredConstructor(new Class[0]);
@@ -577,57 +591,19 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
         return null;
     }
 
-    /*
-     * Wrapper to convert a JUnit4 class into a TestCase
-     *
-     *  TODO - work out how to convert JUnit4 assertions so they are treated as failures rather than errors
-     */
-    private class AnnotatedTestCase extends TestCase {
-        private final Method method;
-        private final Class<? extends Throwable> expectedException;
-        private final long timeout;
-        public AnnotatedTestCase(Method method, Class<? extends Throwable> expectedException2, long timeout) {
-            this.method = method;
-            this.expectedException = expectedException2;
-            this.timeout = timeout;
-        }
 
-        @Override
-        protected void runTest() throws Throwable {
-            try {
-                long start = System.currentTimeMillis();
-                method.invoke(testObject, (Object[])null);
-                if (expectedException != None.class) {
-                    throw new AssertionFailedError(
-                            "No error was generated for a test case which specifies an error.");
-                }
-                if (timeout > 0){
-                    long elapsed = System.currentTimeMillis() - start;
-                    if (elapsed > timeout) {
-                        throw new AssertionFailedError("Test took longer than the specified timeout.");
+    protected Method getSpockTestMethod(Object clazz, String spockNameOfTest) {
+        Class<? extends Annotation> annotation = FeatureMetadata.class;
+        if(null != clazz && null != annotation) {
+            for(Method m : clazz.getClass().getMethods()) {
+                if(m.isAnnotationPresent(annotation)) {
+                    if(((FeatureMetadata)m.getAnnotation(annotation)).name().equals(spockNameOfTest)) {
+                        return m;
                     }
-                }
-            } catch (InvocationTargetException e) {
-                Throwable thrown = e.getCause();
-                if (thrown == null) { // probably should not happen
-                    throw e;
-                }
-                if (expectedException == None.class){
-                    // Convert JUnit4 AssertionError failures to JUnit3 style so
-                    // will be treated as failure rather than error.
-                    if (thrown instanceof AssertionError && !(thrown instanceof AssertionFailedError)){
-                        AssertionFailedError afe = new AssertionFailedError(thrown.toString());
-                        // copy the original stack trace
-                        afe.setStackTrace(thrown.getStackTrace());
-                        throw afe;
-                    }
-                    throw thrown;
-                }
-                if (!expectedException.isAssignableFrom(thrown.getClass())){
-                    throw new AssertionFailedError("The wrong exception was thrown from the test case");
                 }
             }
         }
+        return null;
     }
 
     @Override
@@ -662,49 +638,35 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
         this.testObject = getClassInstance(className, rlabel);
         if (this.testObject != null){
             initMethodObjects(this.testObject);
-            final Method m = getMethod(this.testObject,methodName);
-            if (getJunit4()){
-                Class<? extends Throwable> expectedException = None.class;
-                long timeout = 0;
-                Test annotation = m.getAnnotation(Test.class);
-                if(null != annotation) {
-                    expectedException = annotation.expected();
-                    timeout = annotation.timeout();
-                }
-                final AnnotatedTestCase at = new AnnotatedTestCase(m, expectedException, timeout);
-                testCase = at;
-                protectable = new Protectable() {
-                    @Override
-                    public void protect() throws Throwable {
-                        at.runTest();
-                    }
-                };
-            } else {
-                this.testCase = (TestCase) this.testObject;
-                final Object theClazz = this.testObject; // Must be final to create instance
-                protectable = new Protectable() {
-                    @Override
-                    public void protect() throws Throwable {
-                        try {
-                            m.invoke(theClazz,new Object[0]);
-                        } catch (InvocationTargetException e) {
-                            /*
-                             * Calling a method via reflection results in wrapping any
-                             * Exceptions in ITE; unwrap these here so runProtected can
-                             * allocate them correctly.
-                             */
-                            Throwable t = e.getCause();
-                            if (t != null) {
-                                throw t;
-                            }
-                            throw e;
+            final Method m = getSpockTestMethod(this.testObject, methodName);
+            this.testCase = (Specification) this.testObject;
+
+            final Object theClazz = this.testObject; // Must be final to create instance
+            protectable = new Protectable() {
+                @Override
+                public void protect() throws Throwable {
+                    try {
+                        m.invoke(theClazz,new Object[0]);
+                    } catch (InvocationTargetException e) {
+                        /*
+                         * Calling a method via reflection results in wrapping any
+                         * Exceptions in ITE; unwrap these here so runProtected can
+                         * allocate them correctly.
+                         */
+                        Throwable t = e.getCause();
+                        if (t != null) {
+                            throw t;
                         }
+                        throw e;
                     }
-                };
-            }
-            if (this.testCase != null){
-                this.testCase.setName(methodName);
-            }
+                }
+            };
+
+// todo Track the spec name
+// @FeatureMetadata(name="An offer can be applied to an order"
+//            if (this.testCase != null){
+//                this.testCase.setName(methodName);
+//            }
         }
     }
 

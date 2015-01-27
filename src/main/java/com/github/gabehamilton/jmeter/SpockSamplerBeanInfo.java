@@ -6,7 +6,6 @@ import java.beans.PropertyDescriptor;
 /**
  * This class defines the bean properties that will be visually exposed for this JMeter plugin.
  * <p/>
- * User: Matthew McCullough
  * Created by gabe on 1/22/15.
  */
 public class SpockSamplerBeanInfo extends BeanInfoSupport {
@@ -17,8 +16,8 @@ public class SpockSamplerBeanInfo extends BeanInfoSupport {
 
         PropertyDescriptor classname = property("classname");
         classname.setValue(NOT_UNDEFINED, Boolean.FALSE);
-        classname.setValue(DEFAULT, "");
+        classname.setValue(DEFAULT, "com.github.gabehamilton.jmeter.SuccessfulSpecToBeRunBySamplerSpec");
         classname.setValue(NOT_EXPRESSION, Boolean.TRUE);
-        classname.setPropertyEditorClass(FileEditor.class);
+//        classname.setPropertyEditorClass(FileEditor.class);
     }
 }

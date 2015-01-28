@@ -16,6 +16,13 @@ class SuccessfulSpecToBeRunBySamplerSpec extends Specification {
             1 == 1
     }
 
+    def "one more time"() {
+        when:
+            println 'prosper through testing'
+        then:
+            2 == 2
+    }
+
     def setup() {
         println 'setup ran'
     }

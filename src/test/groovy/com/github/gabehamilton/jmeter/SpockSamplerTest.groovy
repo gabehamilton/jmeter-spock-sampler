@@ -8,15 +8,14 @@ import java.lang.reflect.Method
 /**
  * Created by gabe on 1/23/15.
  */
-class SpockSamplerSpec extends Specification {
+class SpockSamplerTest extends Specification {
 
 
-	def "sample runs a spec"() {
+	def "sampler runs a spec"() {
 		when:
 			Locale.setDefault(Locale.US)
 			SpockSampler sampler = new SpockSampler() // warns of NPE due to locale
 			sampler.setClassname(SuccessfulSpecToBeRunBySamplerSpec.getCanonicalName())
-//			sampler.setMethod('it should pretend to test something')
 			sampler.threadStarted()
 			SampleResult result = sampler.sample(null)
 			sampler.threadFinished()
@@ -26,19 +25,18 @@ class SpockSamplerSpec extends Specification {
 			!result.responseMessage.startsWith('Failed')
 	}
 
-	def "getSpockTestMethod finds Spock Tests"() {
-
+	def "sampler runs a single method in spec"() {
 		when:
-			SpockSampler sampler = new SpockSampler() // warns of NPE due to locale
-			Method m = sampler.getSpockTestMethod(new SuccessfulSpecToBeRunBySamplerSpec(), "")
+		Locale.setDefault(Locale.US)
+		SpockSampler sampler = new SpockSampler() // warns of NPE due to locale
+		sampler.setClassname(SuccessfulSpecToBeRunBySamplerSpec.getCanonicalName())
+		sampler.setMethod('$spock_feature_0_0')// aka 'it should pretend to test something'
+		sampler.threadStarted()
+		SampleResult result = sampler.sample(null)
+		sampler.threadFinished()
 		then:
-			m == null
-
-		when:
-			 m = sampler.getSpockTestMethod(new SuccessfulSpecToBeRunBySamplerSpec(), "it should pretend to test something")
-		then:
-			m != null
-			m.getName().equals('$spock_feature_0_0')
+		result != null
+		result.isSuccessful()
+		!result.responseMessage.startsWith('Failed')
 	}
-
 }

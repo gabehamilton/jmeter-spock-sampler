@@ -27,6 +27,7 @@ import org.apache.jmeter.testelement.ThreadListener;
 import org.apache.jorphan.logging.LoggingManager;
 import org.apache.log.Logger;
 import org.junit.runner.Result;
+import org.junit.runner.manipulation.NoTestsRemainException;
 import org.junit.runner.notification.Failure;
 import org.junit.runners.model.InitializationError;
 import org.spockframework.runtime.model.FeatureMetadata;
@@ -52,27 +53,27 @@ import java.util.Iterator;
  * @see org.apache.jmeter.protocol.java.sampler.JunitSampler
  * @link http://svn.apache.org/repos/asf/jmeter/trunk/src/junit/org/apache/jmeter/protocol/java/sampler/JUnitSampler.java
  */
-public class SpockSampler extends AbstractSampler implements ThreadListener, TestBean {
+public class SpockSampler extends AbstractSampler implements ThreadListener {
 
     private static final Logger log = LoggingManager.getLoggerForClass();
 
     private static final long serialVersionUID = 1L; // Remember to change this when the class changes
 
-    // BeanInfo properties
-    private static final String CLASSNAME = "spockSampler.classname";
-    private static final String CONSTRUCTORSTRING = "spockSampler.constructorstring";
-    private static final String METHOD = "spockSampler.method";
-    private static final String ERROR = "spockSampler.error";
-    private static final String ERRORCODE = "spockSampler.error.code";
-    private static final String FAILURE = "spockSampler.failure";
-    private static final String FAILURECODE = "spockSampler.failure.code";
-    private static final String SUCCESS = "spockSampler.success";
-    private static final String SUCCESSCODE = "spockSampler.success.code";
-    private static final String FILTER = "spockSampler.pkg.filter";
-    private static final String DOSETUP = "spockSampler.exec.setup";
-    private static final String APPEND_ERROR = "spockSampler.append.error";
-    private static final String APPEND_EXCEPTION = "spockSampler.append.exception";
-    private static final String CREATE_INSTANCE_PER_SAMPLE="spockSampler.createinstancepersample";
+    // BeanInfo properties looked up in the core org.apache.jmeter.resources messages.properties
+    private static final String CLASSNAME = "junit.classname";
+    private static final String CONSTRUCTORSTRING = "junit.constructorstring";
+    private static final String METHOD = "junit.method";
+    private static final String ERROR = "junit.error";
+    private static final String ERRORCODE = "junit.error.code";
+    private static final String FAILURE = "junit.failure";
+    private static final String FAILURECODE = "junit.failure.code";
+    private static final String SUCCESS = "junit.success";
+    private static final String SUCCESSCODE = "junit.success.code";
+    private static final String FILTER = "junit.pkg.filter";
+    private static final String DOSETUP = "junit.exec.setup";
+    private static final String APPEND_ERROR = "junit.append.error";
+    private static final String APPEND_EXCEPTION = "junit.append.exception";
+    private static final String CREATE_INSTANCE_PER_SAMPLE="junit.createinstancepersample";
     private static final boolean CREATE_INSTANCE_PER_SAMPLE_DEFAULT = false;
     //--
 
@@ -87,17 +88,11 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
 
     // The TestCase to run
     private transient Specification testCase;
-    // The test object, i.e. the instance of the class containing the test method
-    // This is the same as testCase for JUnit3 tests
-    // but different for JUnit4 tests which use a wrapper
-    private transient Object testObject;
 
     // The method name to be invoked
     private transient String methodName;
     // The name of the class containing the method
     private transient String className;
-    // The wrapper used to invoke the method
-    private transient Protectable protectable;
 
     public SpockSampler(){
         super();
@@ -125,26 +120,29 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
             final Specification spec = this.testCase;
             try {
                 if (setUpMethod != null){
-                    setUpMethod.invoke(this.testObject,new Object[0]);
+//                    SpockSpecRunner.execute(spec.getClass(), SETUP);
+                    setUpMethod.invoke(this.testCase,new Object[0]);
                 }
                 sresult.sampleStart();
 
-                result = SpockSpecRunner.execute(spec.getClass());
+                log.info("Running " + spec.getClass().getName() + "." + methodName);
+                result = SpockSpecRunner.execute(spec.getClass(), methodName);
 
-                // todo Extend Spock BaseSpecRunner to allow running just one method and individually
-				//  note SpockSpecificationFilter in SpockSpecRunner
-                // calling setUp and tearDown. Doing that will result in calling
+                // todo avoid calling setUp and tearDown.
+                // Doing that will result in calling
                 // the setUp and tearDown method twice and the elapsed time
                 // will include setup and teardown.
                 sresult.sampleEnd();
                 if (tearDownMethod != null){
-                    tearDownMethod.invoke(testObject,new Object[0]);
+                    tearDownMethod.invoke(testCase,new Object[0]);
                 }
-//                sresult.setSampleCount(result.getRunCount());
             }
 
             catch(InitializationError ie) {
                 throw new RuntimeException(ie);
+            }
+            catch(NoTestsRemainException ntre) {
+                log.error("No tests remain:: " + ntre.getMessage());
             }
 
             catch (InvocationTargetException e) {
@@ -227,15 +225,15 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
 
     /**
      * Method tries to get the setUp and tearDown method for the class
-     * @param testObject
+     * @param testCase
      */
-    private void initMethodObjects(Object testObject){
+    private void initMethodObjects(Object testCase){
         setUpMethod = null;
         tearDownMethod = null;
         if (!getDoNotSetUpTearDown()) {
             // todo setup and cleanup are not being found
-            setUpMethod = getMethod(testObject, SETUP);
-            tearDownMethod = getMethod(testObject, TEARDOWN);
+            setUpMethod = getMethod(testCase, SETUP);
+            tearDownMethod = getMethod(testCase, TEARDOWN);
         }
     }
 
@@ -498,11 +496,6 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
             Object[] strParams = null;
             Object[] params = null;
 
-            // todo this is a hack until the GUI is working
-            if("".equals(className)) {
-                className = "com.github.gabehamilton.jmeter.SuccessfulSpecToBeRunBySamplerSpec";
-            }
-
             try
             {
                 theclazz =
@@ -591,21 +584,6 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
         return null;
     }
 
-
-    protected Method getSpockTestMethod(Object clazz, String spockNameOfTest) {
-        Class<? extends Annotation> annotation = FeatureMetadata.class;
-        if(null != clazz && null != annotation) {
-            for(Method m : clazz.getClass().getMethods()) {
-                if(m.isAnnotationPresent(annotation)) {
-                    if(((FeatureMetadata)m.getAnnotation(annotation)).name().equals(spockNameOfTest)) {
-                        return m;
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
     @Override
     public void threadFinished() {
     }
@@ -615,11 +593,9 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
      */
     @Override
     public void threadStarted() {
-        testObject = null;
         testCase = null;
         methodName = getMethod();
         className = getClassname();
-        protectable = null;
         if(!getCreateOneInstancePerSample()) {
             // NO NEED TO INITIALIZE WHEN getCreateOneInstancePerSample 
             // is true cause it will be done in sample
@@ -635,38 +611,10 @@ public class SpockSampler extends AbstractSampler implements ThreadListener, Tes
         if (rlabel.length()== 0) {
             rlabel = SpockSampler.class.getName();
         }
-        this.testObject = getClassInstance(className, rlabel);
-        if (this.testObject != null){
-            initMethodObjects(this.testObject);
-            final Method m = getSpockTestMethod(this.testObject, methodName);
-            this.testCase = (Specification) this.testObject;
+        this.testCase = (Specification) getClassInstance(className, rlabel);
+        if (this.testCase != null){
+            initMethodObjects(this.testCase);
 
-            final Object theClazz = this.testObject; // Must be final to create instance
-            protectable = new Protectable() {
-                @Override
-                public void protect() throws Throwable {
-                    try {
-                        m.invoke(theClazz,new Object[0]);
-                    } catch (InvocationTargetException e) {
-                        /*
-                         * Calling a method via reflection results in wrapping any
-                         * Exceptions in ITE; unwrap these here so runProtected can
-                         * allocate them correctly.
-                         */
-                        Throwable t = e.getCause();
-                        if (t != null) {
-                            throw t;
-                        }
-                        throw e;
-                    }
-                }
-            };
-
-// todo Track the spec name
-// @FeatureMetadata(name="An offer can be applied to an order"
-//            if (this.testCase != null){
-//                this.testCase.setName(methodName);
-//            }
         }
     }
 
